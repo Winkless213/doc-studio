@@ -1,0 +1,8 @@
+pymupdf
+fastapi
+uvicorn
+pywebview
+pillow
+numpy
+requests
+# 图片型品牌的 LaMa 修复需额外安装 torch 及对应模型
