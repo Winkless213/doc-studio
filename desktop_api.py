@@ -30,6 +30,7 @@ app.add_api_route("/detect-type", S.detect_type, methods=["POST"])
 app.add_api_route("/both", S.both, methods=["POST"])
 app.add_api_route("/translate", S.translate, methods=["POST"])
 app.add_api_route("/debrand", S.debrand, methods=["POST"])
+app.add_api_route("/risk-review/apply", S.apply_risk_review, methods=["POST"])
 app.add_api_route("/analyze-catalog", S.analyze_catalog, methods=["POST"])
 app.add_api_route("/apply-catalog", S.apply_catalog, methods=["POST"])
 

@@ -54,7 +54,7 @@ def main():
     threading.Thread(target=_run_server, args=(port,), daemon=True).start()
     _wait_ready(port)
     import webview
-    webview.create_window("文档处理工具 · DocStudio", f"http://127.0.0.1:{port}/app",
+    webview.create_window("DocStudio 文档处理工具", f"http://127.0.0.1:{port}/app",
                           width=1180, height=820, min_size=(900, 640))
     webview.start()
 

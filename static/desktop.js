@@ -6,6 +6,7 @@ let file = null
 let docType = null          // 'vector' | 'image'
 let catPages = []           // [{page,type,typeLabel,suggestedDelete,suggestErase,why,brandBoxes,thumb,del,eraseBoxes}]
 let eraseTarget = null      // 当前编辑擦除的页对象
+let currentReview = null
 
 const $ = id => document.getElementById(id)
 function toast(msg, kind) {
@@ -32,6 +33,7 @@ function onFile(f) {
 
 function resetAll() {
   docType = null; catPages = []
+  currentReview = null
   $('vectorCard').classList.add('hide')
   $('catCard').classList.add('hide')
   $('catReview').classList.add('hide')
@@ -97,22 +99,79 @@ $('runVector').onclick = async () => {
 
 function parseQA(h) { const m = {}; (h || '').split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) m[p.slice(0, i)] = p.slice(i + 1) }); return m }
 function decodeVision(b64) { try { return JSON.parse(decodeURIComponent(escape(atob(b64)))) } catch (e) { return { issues: [], brand_text: [] } } }
+function decodeReview(b64) { try { return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))) } catch (e) { return null } }
+function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
 
 function renderVectorResult(headers, blob, fname) {
   const map = parseQA(headers.get('x-doc-qa'))
   const vis = headers.get('x-doc-qa-vision') ? decodeVision(headers.get('x-doc-qa-vision')) : { issues: [], brand_text: [] }
+  currentReview = headers.get('x-doc-review') ? decodeReview(headers.get('x-doc-review')) : null
   const verdict = map.verdict || 'pass'
-  const vWord = { pass: '可直接发客户', warn: '可发，建议先核对下方标注项', fail: '不建议发：品牌未清干净' }[verdict]
-  let html = `<div class="verdict ${verdict}">${verdict === 'pass' ? '✓' : (verdict === 'fail' ? '✕' : '⚠')} ${vWord}</div>`
+  const needsReview = currentReview && currentReview.summary && (currentReview.summary.must || currentReview.summary.review)
+  const vWord = needsReview ? '需人工确认：发现供应商线索候选' : { pass: '可直接发客户', warn: '可发，建议先核对下方标注项', fail: '不建议发：品牌未清干净' }[verdict]
+  let html = `<div class="verdict ${needsReview ? 'warn' : verdict}">${needsReview ? '⚠' : (verdict === 'pass' ? '✓' : (verdict === 'fail' ? '✕' : '⚠'))} ${vWord}</div>`
   Object.keys(CHECK).forEach(k => { if (map[k] !== undefined) { const n = +map[k]; const lv = n === 0 ? 'ok' : CHECK[k][1]; html += `<div class="chk ${lv}">${n === 0 ? '✓' : (lv === 'fail' ? '✕' : '⚠')} ${CHECK[k][0]}${n > 0 ? ' (' + n + ')' : ''}</div>` } })
   if (+map.logo > 0) html += `<div class="hint">已自动删除 ${map.logo} 个供应商 logo。</div>`
   if (vis.issues && vis.issues.length) { html += '<div class="label" style="margin-top:10px">AI 视觉复检</div>'; vis.issues.forEach(p => { html += `<div class="chk bad">第${p.page}页：${(p.issues || []).join('；')}</div>` }) }
+  if (currentReview && currentReview.candidates && currentReview.candidates.length) html += renderRiskReview(currentReview)
   const url = URL.createObjectURL(blob)
   html += `<div style="margin-top:14px;display:flex;gap:10px;align-items:center">
     <a class="btn" href="${url}" download="${fname}">⬇ 导出 PDF</a>
     <span class="hint">核对质检结果无误后下载。</span></div>`
   $('vectorResult').innerHTML = html
 }
+
+function renderRiskReview(review) {
+  const must = review.summary?.must || 0
+  const pending = review.summary?.review || 0
+  let html = `<div class="riskbox">
+    <div class="riskhead"><span>风险线索审查</span><small>必删 ${must} · 待审 ${pending}</small></div>
+    <div class="hint">勾选后会二次清洗。待审项默认保留，避免误删型号、产品配置或正常卖点。</div>`
+  review.candidates.forEach(c => {
+    const checked = c.selected ? 'checked' : ''
+    const tag = c.level === 'must' ? '必删' : '待审'
+    html += `<label class="riskrow ${c.level}">
+      <input type="checkbox" data-risk="${esc(c.id)}" ${checked}>
+      <span class="riskmeta"><b>${tag}</b>${c.page ? `第${c.page}页` : '未定位'} · ${esc(c.reason)}</span>
+      <span class="risktext">${esc(c.text)}</span>
+    </label>`
+  })
+  html += `<div class="riskactions">
+    <button class="btn warn sm" onclick="applyRiskReview()">生成二次清洗版</button>
+    <span class="hint">规则 QA 与视觉 QA 不一致时，以人工确认后的二次版为准。</span>
+  </div></div>`
+  return html
+}
+
+async function applyRiskReview() {
+  if (!currentReview || !currentReview.id) return
+  const selected = currentReview.candidates.filter(c => {
+    const el = document.querySelector(`[data-risk="${CSS.escape(c.id)}"]`)
+    return el && el.checked
+  })
+  if (!selected.length) { toast('没有勾选要删除的线索', 'err'); return }
+  const btn = event && event.target ? event.target : null
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> 二次清洗中' }
+  const fd = new FormData()
+  fd.append('review_id', currentReview.id)
+  fd.append('selections', JSON.stringify(selected))
+  try {
+    const r = await fetch('/risk-review/apply', { method: 'POST', body: fd })
+    if (!r.ok) { let m = '二次清洗失败'; try { m = (await r.json()).detail || m } catch (e) {} toast(m, 'err'); return }
+    const blob = await r.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = (file ? file.name.replace(/\.pdf$/i, '') : 'document') + '_reviewed_clean.pdf'
+    a.click()
+    toast('已生成二次清洗版 PDF', 'ok')
+    currentReview = r.headers.get('x-doc-review') ? decodeReview(r.headers.get('x-doc-review')) : currentReview
+  } catch (e) {
+    toast('二次清洗失败', 'err')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '生成二次清洗版' }
+  }
+}
+window.applyRiskReview = applyRiskReview
 
 /* ---------- 图片向导 ---------- */
 $('analyzeBtn').onclick = async () => {
@@ -123,7 +182,7 @@ $('analyzeBtn').onclick = async () => {
     const r = await fetch('/analyze-catalog', { method: 'POST', body: fd })
     const j = await r.json()
     if (!j.items || !j.items.length) { toast('没有可处理的页面', 'err'); return }
-    catPages = j.items.map(it => ({ ...it, del: !!it.suggestedDelete, eraseBoxes: (it.suggestErase && it.brandBoxes) ? it.brandBoxes.slice() : [] }))
+    catPages = j.items.map(it => ({ ...it, del: !!it.suggestedDelete, riskBoxes: (it.brandBoxes || []).slice(), eraseBoxes: [] }))
     $('catStart').classList.add('hide'); $('catReview').classList.remove('hide')
     renderCat()
   } catch (e) { toast('分析失败', 'err') } finally { btn.disabled = false; btn.textContent = '分析（逐页）' }
@@ -140,6 +199,7 @@ function renderCat() {
     const div = document.createElement('div')
     div.className = 'pg' + (p.del ? ' del' : (p.eraseBoxes.length ? ' erase' : ''))
     const eraseBadge = (!p.del && p.eraseBoxes.length) ? `<span class="erasebadge">擦 ${p.eraseBoxes.length}</span>` : ''
+    const riskBadge = (!p.del && p.riskBoxes && p.riskBoxes.length) ? `<span class="riskbadge">待审 ${p.riskBoxes.length}</span>` : ''
     div.innerHTML = `
       <div class="thumb">
         <img src="${p.thumb}">
@@ -149,10 +209,11 @@ function renderCat() {
         <span class="pn">第 ${p.page} 页</span>
         <span class="tag ${p.suggestedDelete ? 'del' : ''}">${p.typeLabel}</span>
         ${eraseBadge}
+        ${riskBadge}
       </div>
       <div class="meta" style="padding-top:0">
         <label style="cursor:pointer"><input type="checkbox" ${p.del ? 'checked' : ''} data-del="${p.page}"> 删页</label>
-        ${p.del ? '' : `<button class="btn ghost sm" data-erase="${p.page}">✂ 擦品牌</button>`}
+        ${p.del ? '' : `<button class="btn ghost sm" data-erase="${p.page}">审查/擦品牌</button>`}
       </div>`
     grid.appendChild(div)
   })
@@ -193,7 +254,7 @@ let canvas, ctx, img2, boxes, drawing, startX, startY
 
 function openErase(p) {
   eraseTarget = p
-  boxes = p.eraseBoxes.map(b => b.slice())
+  boxes = p.eraseBoxes.length ? p.eraseBoxes.map(b => b.slice()) : (p.riskBoxes || []).map(b => b.slice())
   $('eraseTitle').textContent = `擦除品牌 — 第 ${p.page} 页`
   $('eraseOverlay').classList.add('show')
   canvas = $('eraseCanvas'); ctx = canvas.getContext('2d')

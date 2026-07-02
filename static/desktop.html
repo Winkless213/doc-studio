@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>文档处理工具 · DocStudio</title>
+<title>DocStudio 文档处理工具</title>
 <style>
   :root { --pri:#2563eb; --pri-d:#1d4ed8; --bg:#f6f7f9; --card:#fff; --bd:#e3e6ea; --tx:#1f2329; --tx2:#6b7280; --warn:#d97706; --warn-bg:#fef3e2; --ok:#16a34a; --danger:#dc2626; }
   * { box-sizing:border-box; }
@@ -54,6 +54,19 @@
   .pg .tag.del { background:var(--warn-bg); color:var(--warn); }
   .pg .pn { color:var(--tx2); }
   .pg .erasebadge { background:var(--warn-bg); color:var(--warn); border-radius:5px; padding:1px 7px; font-weight:600; }
+  .pg .riskbadge { background:#eef4ff; color:var(--pri); border-radius:5px; padding:1px 7px; font-weight:600; }
+  .riskbox { margin-top:12px; border:1px solid #d6dbe5; border-radius:8px; overflow:hidden; background:#fbfcfe; }
+  .riskhead { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:#eef2f8; font-weight:700; }
+  .riskhead small { color:var(--tx2); font-weight:600; }
+  .riskrow { display:grid; grid-template-columns:18px minmax(120px,210px) 1fr; gap:9px; align-items:start; padding:9px 12px; border-top:1px solid #e6eaf0; cursor:pointer; }
+  .riskrow.must { background:#fff7f7; }
+  .riskrow.review { background:#fffaf0; }
+  .riskrow input { margin-top:2px; }
+  .riskmeta { color:var(--tx2); font-size:12px; line-height:1.45; }
+  .riskmeta b { display:inline-block; margin-right:6px; color:var(--danger); }
+  .riskrow.review .riskmeta b { color:var(--warn); }
+  .risktext { font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+  .riskactions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 12px; border-top:1px solid #e6eaf0; }
   .toolbar { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
   .toolbar .sum { font-weight:700; }
   .toolbar .right { margin-left:auto; display:flex; gap:9px; }
@@ -76,6 +89,13 @@
   .editor .ft .info { color:var(--tx2); font-size:12px; }
   .editor .ft .right { margin-left:auto; display:flex; gap:9px; }
   .hide { display:none !important; }
+  @media (max-width: 720px) {
+    .wrap { padding:18px; }
+    .row { flex-direction:column; }
+    .riskrow { grid-template-columns:18px 1fr; }
+    .risktext { grid-column:2; }
+    .toolbar .right { margin-left:0; }
+  }
 </style>
 </head>
 <body>
@@ -86,7 +106,7 @@
   <!-- 上传 + 判别 -->
   <div class="card">
     <div class="label">品牌词（要删除的供应商名/品牌，逗号分隔）</div>
-    <input type="text" id="brand" placeholder="示例：示例品牌, 示例">
+    <input type="text" id="brand" placeholder="示例：ACME, ACME Group">
     <div class="hint">可留空。矢量文档用于删文字里的品牌；图片型目录用于辅助逐页判断品牌页。</div>
     <div class="label" style="margin-top:14px">文档（PDF）</div>
     <div class="drop" id="drop">

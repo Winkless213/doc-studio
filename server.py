@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-DocStudio 文档处理服务(独立 Python 小服务, co-locate 同台 ECS 同 Big KB)。
+DocStudio 文档处理服务(独立 Python 小服务)。
 两条线统一载体:
   - 对内: /parse-quote 供应商报价单 PDF -> 采购系统报价草稿(采购员录入用)
   - 对外: /debrand(仅去品牌) /translate(仅翻译) /both(翻译+去品牌, 主用途, 发客户)
 其他内部系统通过 HTTP 调本服务。引擎逻辑复用 engine_structify / engine。
 """
-import fitz, os, shutil, tempfile, base64
+import fitz, os, shutil, tempfile, base64, uuid, re
 from datetime import date
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
@@ -17,9 +17,12 @@ from engine import run as engine_run
 from engine_translate import extract_cells
 from engine_qa import build_qa, qa_header, vision_qa
 import engine_review
+from risk_review import scan_pdf, apply_deletions, write_review_artifacts
 import json
 
 app = FastAPI(title="DocStudio Document Processing Service", version="0.1")
+_REVIEW_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "review-sessions")
+os.makedirs(_REVIEW_ROOT, exist_ok=True)
 
 # 翻译模型 = plus 档"按到期自动接力"队列(先到期先用完, 免费额度不浪费; 当前模型过期或某批调用失败→自动切链中下一个)。
 # 额度=每模型100万免费token·独立计算·各有到期日(2026-06-24 控制台 img 为准)。搜货 MCP 另吃 3.7max 系列, 互不抢。
@@ -75,6 +78,44 @@ def _qa_headers(rep, mode, out_pdf=None, brand="", vision=False):
     return hdr
 
 
+def _store_review_pdf(pdf_path, source_name, brand, vision_payload=None):
+    """Persist a processed PDF for a short human-review loop."""
+    rid = uuid.uuid4().hex[:12]
+    d = os.path.join(_REVIEW_ROOT, rid)
+    os.makedirs(d, exist_ok=True)
+    stored = os.path.join(d, "processed.pdf")
+    shutil.copyfile(pdf_path, stored)
+    brand_tokens = [t.strip() for t in (brand or "").split(",") if t.strip()]
+    review = scan_pdf(stored, brand_tokens=brand_tokens, vision_payload=vision_payload)
+    meta = {"id": rid, "sourceName": source_name, "brand": brand or "", "pdf": stored, "review": review}
+    with open(os.path.join(d, "review.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    return rid, review
+
+
+def _review_headers(rid, review):
+    payload = {"id": rid, "summary": review.get("summary", {}), "candidates": review.get("candidates", [])}
+    encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode()).decode()
+    return {
+        "X-Doc-Review": encoded,
+        "Access-Control-Expose-Headers": "X-Doc-QA, X-Doc-QA-Vision, X-Doc-Review",
+    }
+
+
+def _merge_headers(*parts):
+    out = {}
+    expose = set()
+    for part in parts:
+        for k, v in (part or {}).items():
+            if k.lower() == "access-control-expose-headers":
+                expose.update(x.strip() for x in v.split(",") if x.strip())
+            else:
+                out[k] = v
+    if expose:
+        out["Access-Control-Expose-Headers"] = ", ".join(sorted(expose))
+    return out
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "doc-processing"}
@@ -82,8 +123,8 @@ def health():
 
 def _detect_doc_type(pdf_bytes):
     """纯算法判别 矢量 vs 图片型(零模型/零延迟): 算每页"最大单图覆盖页面的比例", 取全文档平均。
-    报价单/矢量目录=几乎无图(只小 logo)平均~0%; 图片型目录(品牌烤进产品照/banner)平均高(示例41%/示例100%)。
-    阈值 20%(实测两类天堑分明: 报价单0% vs 示例41%)。图片型=可能有烤入品牌→走向导; 矢量=矢量去品牌能搞定。"""
+    报价单/矢量目录=几乎无图(只小 logo)平均~0%; 图片型目录(品牌烤进产品照/banner)平均高(样例目录 41%/100%)。
+    阈值 20%(实测两类天堑分明: 报价单0% vs 图片型目录41%)。图片型=可能有烤入品牌→走向导; 矢量=矢量去品牌能搞定。"""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     n = doc.page_count or 1
     covs = []
@@ -154,9 +195,11 @@ async def debrand(file: UploadFile = File(...), brand: str = Form(""), auto_drop
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(500, f"去品牌失败: {e}")
     base = (file.filename or "document").rsplit(".", 1)[0]
+    qa_hdr = _qa_headers(rep, "debrand", out_pdf, brand, vision)
+    rid, review = _store_review_pdf(out_pdf, file.filename or "document.pdf", brand, qa_hdr.get("X-Doc-QA-Vision"))
     return FileResponse(out_pdf, media_type="application/pdf",
                         filename=f"{base}_debranded.pdf",
-                        headers=_qa_headers(rep, "debrand", out_pdf, brand, vision),
+                        headers=_merge_headers(qa_hdr, _review_headers(rid, review)),
                         background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
 
 
@@ -260,9 +303,11 @@ async def translate(file: UploadFile = File(...), target: str = Form("英文"), 
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(500, f"翻译失败: {e}")
     base = (file.filename or "document").rsplit(".", 1)[0]
+    qa_hdr = _qa_headers(rep, "translate", out_pdf, "", vision)
+    rid, review = _store_review_pdf(out_pdf, file.filename or "document.pdf", "", qa_hdr.get("X-Doc-QA-Vision"))
     return FileResponse(out_pdf, media_type="application/pdf",
                         filename=f"{base}_translated.pdf",
-                        headers=_qa_headers(rep, "translate", out_pdf, "", vision),
+                        headers=_merge_headers(qa_hdr, _review_headers(rid, review)),
                         background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
 
 
@@ -294,10 +339,57 @@ async def both(file: UploadFile = File(...), brand: str = Form(""), target: str 
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(500, f"翻译+去品牌失败: {e}")
     base = (file.filename or "document").rsplit(".", 1)[0]
+    qa_hdr = _qa_headers(rep, "both", out_pdf, brand, vision)
+    rid, review = _store_review_pdf(out_pdf, file.filename or "document.pdf", brand, qa_hdr.get("X-Doc-QA-Vision"))
     return FileResponse(out_pdf, media_type="application/pdf",
                         filename=f"{base}_clean.pdf",
-                        headers=_qa_headers(rep, "both", out_pdf, brand, vision),
+                        headers=_merge_headers(qa_hdr, _review_headers(rid, review)),
                         background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
+
+
+@app.post("/risk-review/apply")
+async def apply_risk_review(review_id: str = Form(...), selections: str = Form("[]"), vision: bool = Form(False)):
+    """Apply human-confirmed risk clues to a processed PDF.
+
+    selections is a JSON array of candidates returned in X-Doc-Review. Only
+    selected rows are deleted; review-only clues stay untouched unless the user
+    checks them in the UI.
+    """
+    rid = re.sub(r"[^a-f0-9]", "", review_id.lower())[:12]
+    d = os.path.join(_REVIEW_ROOT, rid)
+    meta_path = os.path.join(d, "review.json")
+    if not rid or not os.path.exists(meta_path):
+        raise HTTPException(404, "审查会话不存在，请重新处理文档")
+    try:
+        selected = json.loads(selections or "[]")
+        if not isinstance(selected, list):
+            raise ValueError("not list")
+    except Exception:
+        raise HTTPException(400, "selections 需为候选线索 JSON 数组")
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    in_pdf = meta.get("pdf")
+    if not in_pdf or not os.path.exists(in_pdf):
+        raise HTTPException(404, "审查源文件不存在，请重新处理文档")
+    out_pdf = os.path.join(d, "reviewed.pdf")
+    rep = apply_deletions(in_pdf, out_pdf, selected)
+    qa_hdr = _qa_headers({"brand_residual": 0, "cjk_residual": 0, "overflow": 0}, "debrand",
+                         out_pdf, meta.get("brand", ""), vision)
+    pages = sorted({s.get("page") for s in selected if s.get("page")})
+    render_dir = os.path.join(d, "render")
+    render_paths = write_review_artifacts(out_pdf, render_dir, pages=pages)
+    final_review = scan_pdf(out_pdf, brand_tokens=[t.strip() for t in meta.get("brand", "").split(",") if t.strip()],
+                            vision_payload=qa_hdr.get("X-Doc-QA-Vision"))
+    meta["reviewedPdf"] = out_pdf
+    meta["applied"] = rep
+    meta["rendered"] = render_paths
+    meta["finalReview"] = final_review
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    base = (meta.get("sourceName") or "document").rsplit(".", 1)[0]
+    return FileResponse(out_pdf, media_type="application/pdf",
+                        filename=f"{base}_reviewed_clean.pdf",
+                        headers=_merge_headers(qa_hdr, _review_headers(rid, final_review)))
 
 
 # ============ 图片型目录清洗向导(老板 6-29 拍板) ============

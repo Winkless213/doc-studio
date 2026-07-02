@@ -162,7 +162,7 @@ def fill_failed_with_common_box(proposal):
 
 def unify_header_boxes(proposal, review_dir, edge=0.075):
     """模板目录页眉 logo 位置固定 -> 取所有 clean 页顶部带(y0<edge*页高)框的并集, 套到每个 clean 页页眉。
-    治单页 VL grounding 框偏小/飘导致 logo 残留(实测示例: 单页框 [25,18,137,60] 漏 logo 右端方块+GROUP)。
+    治单页 VL grounding 框偏小/飘导致 logo 残留(实测某样例目录: 单页框 [25,18,137,60] 漏 logo 右端方块+GROUP)。
     并集框覆盖所有页 logo 最大范围, 模板一致性保证盖全; body 区(产品图角标)框保留不动(仍走 flagged 不盖)。
     需 review_dir 读缩略图页高(px)换算 edge 带。原地改 proposal, 返回 (proposal, 并集框 or None)。"""
     thumbs = [os.path.join(review_dir, f) for f in os.listdir(review_dir) if f.startswith("p") and f.endswith(".png")]

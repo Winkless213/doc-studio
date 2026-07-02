@@ -1,24 +1,78 @@
-# DocStudio — 文档处理工具(翻译 + 去品牌)
+# 通用文档去品牌工具 (catalog debrand)
 
-外贸文档本地处理工具:中英互译报价单 / 产品目录,并自动去除 PDF 中的品牌信息(logo、公司名、联系方式)。个人作品展示版,已移除业务方 / 客户信息与密钥。
+> 2026-06-24 验通。机器换号也读得到(在 D 盘,memory 触发词"继续文档")。
+> 重依赖(LaMa/torch 等)若将来要装,装 D 盘新文件夹,别装 C 盘。
 
-## 功能
-- **中英翻译**:PDF 报价单 / 目录原地翻译,保留版面;术语库 + 翻译记忆保证术语一致。
-- **自动去品牌**:检测并移除 logo、公司名、联系方式。矢量 / 版面层直接删覆盖层还原干净底图;图片型(品牌烤进照片)用 LaMa 图像修复。
-- **质检 + 人工终审**:残留检测、歧义提问、终审确认后导出。
-- **两种形态**:桌面 App(pywebview)+ FastAPI 服务。
+## 它做什么
+PDF 目录/报价单 → 去掉厂商品牌(logo / 公司名 / 联系方式 / 社媒账号)+ 保住版面/产品图/参数,原格式传回。
 
-## 技术
-Python · PyMuPDF(版面 / 文本 / 图层)· 视觉和文本大模型(DashScope / Qwen-VL)· LaMa 图像修复 · FastAPI · pywebview
+## 核心机制(为什么不用 LaMa 也能像素完美)
+PPT/矢量版目录的品牌元素 = **盖在完整干净背景上的覆盖层**(独立图对象 + 文本)。
+- logo 图 → `page.delete_image` 删掉 → 露出底下本就完好的背景(像素完美)
+- 品牌文字/联系信息 → 无填充 redaction(`fill=None`)真删 → 露出底图(无白框)
+只有"烤进照片里的水印/证书内文字"才需要 LaMa(stage 2,本目录没用上)。
 
-核心思路:**原地挖字换字、不重画版面**;品牌多为干净底图上的覆盖层,删图层即还原。
+## 覆盖性(不写死任何一本目录)
+- 品牌词由你给(`--brand`,每本不同)
+- logo **自动检测**:同一图跨 ≥3 页 + 中位面积 <6% = logo
+- 联系信息:块级检测(address/tel/email/URL…)+ 续行块清扫(PDF 拆行的 URL 尾巴)
+- 社媒页:删账号、留平台名(Twitter/Google…)
+- 一次性大水印/异形 logo:自动层不盲删(怕误伤内容),列进 `oneoff_images` 报告 → 人工/视觉层用 `--remove-xref` 指定
 
-## 运行
-    pip install -r requirements.txt
-    export DASHSCOPE_API_KEY="your-key"   # 需要大模型识别能力时配置
-    python server.py          # FastAPI 服务
-    # 或 python desktop_app.py   # 桌面版
+## 用法
+```
+python debrand.py --in <输入.pdf> --out <输出.pdf> --brand ACME [ACME ...] \
+    [--remove-xref 10 26]   # 视觉层认定的一次性图对象(如封面水印)
+    [--auto-drop]           # 自动删"分类器判为 drop 的页"(企业宣传/联系/空页); keep/review 页保留
+    [--drop-page 3 22 23]   # 手动整页删(补删 review 页, 可与 --auto-drop 叠加)
+    [--no-contact]          # 不删联系信息
+    [--review <目录>]       # 逐页渲染 PNG 供肉眼终审
+```
+品牌词大小写不敏感(给 `ACME` 自动覆盖 ACME/ACME)。
 
-## 主要文件
-- engine_translate.py / debrand.py / engine_inpaint.py / engine_review.py — 翻译 / 去品牌 / 修复 / 质检引擎
-- server.py — FastAPI 服务 · desktop_app.py — 桌面应用 · glossary.json — 术语库
+## ⭐页面自动分类器(2026-06-24 加, 把"删哪些页"通用化)
+跑完终端打印每页分类 + 建议, 不用再肉眼逐页判:
+| 类型 | 信号 | 建议 |
+|---|---|---|
+| product 产品页 | 型号样式(`HW\d`类) / 规格词(operating weight…) / 产品类别词(excavator…) | ✅留 |
+| promo 企业宣传 | 章节短语(development history/sales network/corporate culture/manufacturing system/megaproject/exhibition…) | ❌删 |
+| credential 资质 | certificate/quality/honor/patent/iso | ⚠️看(留则注意图内可能烤公司名) |
+| contact 联系 | ≥3 社媒平台名 | ❌删 |
+| empty 空页 | 文本<40字符(非封面) | ❌删 |
+| cover 封面 | 第1页 | ✅留 |
+关键设计:"企业章节短语"全文匹配且**优先于产品判定**——解决"发展历程页正文提到 excavator 被误判产品"(标题字号常被大数字/年份抢占, 故认短语不认标题字号)。
+信号是通用工业目录英文词, 不写死某一本。非英文目录需扩词。
+
+## 标准流程(每本目录)
+1. 先跑一遍只带 `--brand`(+`--review`), **看终端打印的页面分类表** + 报告
+2. 看报告:
+   - 分类表 → keep(留)/drop(建议删)/review(人工定) 一目了然
+   - `oneoff_images` + 封面/封底 → 认出漏网的一次性水印 xref(给 `--remove-xref`)
+3. 满意分类就 `--auto-drop`(删所有 drop 页) + `--drop-page <要删的review页>` 重跑; 不放心就全用 `--drop-page` 手动挑
+4. 看 `RESIDUAL brand tokens` 必须为 0 + 肉眼终审 review PNG
+5. 人工终审(老板护城河)→ 交付
+
+## 供应商三件套(整页删,不只清文字)
+经销商最忌讳的供应商可追溯信息:① 品牌 logo/公司名 ② 联系方式(地址/电话/邮箱) ③ **销售渠道(Find Us/社媒/电商店铺链接)**。
+第③类("Find Us"页把客户直接导向供应商的阿里/亚马逊店)= 整页删,不是清账号留页面。
+工具 `droppable_candidates` 会自动把这类页 + 删光后的空封底标出来。
+
+## 已验交付
+- sample-catalog.pdf(29页)→ `out/sample-catalog_debranded.pdf`(**13页, 纯产品目录**)
+  - logo 自动删(xref 22/24/47);封面金属水印 `--remove-xref 10`;公司名/联系/社媒账号清除;残留品牌词 0
+  - **留 13 页 = 封面 + 应用选型矩阵(p8) + 产品总览(p9) + 产品页(p10~19)** = 全是产品, 零企业信息
+  - **删 16 页 = 章节目录页(p2/p5/p26) + 实力宣传(数据p3/发展历程p4/工厂p6/研发p7/销售网络p20/展会p21/海外项目p24/企业文化p27) + 资质(证书p22/荣誉p23, 图内烤名字泄漏故删) + 售后(p25) + Find Us(p28) + 空封底(p29)**
+  - 命令:`python debrand.py --in "...sample-catalog.pdf" --out "out\...终版.pdf" --brand ACME --remove-xref 10 --drop-page 2 3 4 5 6 7 20 21 22 23 24 25 26 27 28 29 --review reviewG`
+  - 注:证书/荣誉页本是资质卖点想留, 但图内烤的公司名擦不掉(stage2才能擦)→ 老板拍板删, 产品目录是核心
+
+## ⭐去品牌的删页哲学(2026-06-24 与老板敲定, 务必固化)
+- **删页 > 脱敏**: 识别线索(海外项目名/总部地名/发展历程年份)别逐句脱敏——碎、易残留、版面留窟窿(实测 p24 脱敏后剩空 caption + 半句 "In the Brazilian")。直接把这些"实力宣传页"整页删掉, 线索随页消失, 干净利落。
+- **目录页跟着删**: 删企业宣传页会让章节分隔目录页(Overview/Strength/Culture)指向空章节、露删改痕迹。所以连目录页一起删, 不留残缺目录。
+- **留删原则**: 留 = 产品(型号/系列/选型) + 硬资质(证书/荣誉) + 基本售后; 删 = "公司多大/多牛/卖到哪"的实力宣传 + 目录页 + 联系页 + 空封底。结果是一本"经销商产品手册", 不是"供应商公司画册"。
+- `--scrub` 脱敏功能保留在工具里(偶尔用), 但默认走删页。
+- 残留小风险: 证书/荣誉图内烤着的公司名(小字, 实际尺寸基本不可读)= stage2 视觉+LaMa 才能擦, 本版未处理, 交付时口头提示老板。
+
+## 已知边界(按设计交给上层,非 bug)
+- 句中 "ACME Group has..." 删牌后剩 "Group has...":不含识别信息,英文略生硬 → **翻译/润色层**(Qwen)处理,非去品牌层职责
+- 证书照片里烤进的公司名:**stage 2 视觉+LaMa**,本目录与老板聊天版均未处理
+- 一次性水印需人工/视觉认 xref:可后续接 Qwen-VL 自动识别(stage 2)
