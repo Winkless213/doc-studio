@@ -9,7 +9,7 @@
 一次性大水印/异形 logo → self-check 列出, 走人工确认 / 视觉模型(后续接 Qwen-VL)。
 
 用法:
-  python debrand.py --in <pdf> --out <pdf> --brand ACME ACME [--no-contact]
+  python debrand.py --in <pdf> --out <pdf> --brand ACME [--no-contact]
 """
 import fitz, os, re, json, argparse
 from collections import defaultdict
