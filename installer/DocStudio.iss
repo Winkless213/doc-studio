@@ -51,6 +51,8 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\DESIGN.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "..\PLAN_一体化整合.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\PLAN_阶段3_结构化入KB.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
