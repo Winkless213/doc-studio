@@ -1,4 +1,4 @@
-# DocStudio · 外贸文档翻译与去品牌工具
+﻿# DocStudio · 外贸文档翻译与去品牌工具
 
 外贸公司从供应商拿到的 PDF 报价单和产品目录，直接转给海外客户会暴露供应商身份。DocStudio 把它们处理成可以直接发给客户的版本：翻译成外文，删掉供应商的 logo、公司名、联系方式和销售渠道，同时保留原版面、产品图和参数。已在外贸公司实际业务中使用。
 
@@ -17,7 +17,7 @@
 
 ## 安装
 
-Windows 安装包在 [Releases](../../releases/latest) 里：下载 `DocStudio-Setup-1.0.0.exe` 安装，装完即可使用，不需要另外安装 Python。安装器会创建开始菜单和桌面快捷方式，装完自动跑一次隐藏自检，失败时提示查看 `%TEMP%\DocStudio-self-test.log`。
+Windows 安装包在 [Releases](../../releases/latest) 里：下载 `DocStudio-Setup-1.0.1.exe` 安装，装完即可使用，不需要另外安装 Python。安装器会创建开始菜单和桌面快捷方式，装完自动跑一次隐藏自检，失败时提示查看 `%TEMP%\DocStudio-self-test.log`。
 
 安装包不含本地 LaMa 图像修复（依赖 `torch`，体积以 GB 计）；需要时按下面的源码方式运行，或在源码环境另装。
 

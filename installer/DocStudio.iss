@@ -1,9 +1,9 @@
-; DocStudio installer (Inno Setup 7)
+﻿; DocStudio installer (Inno Setup 7)
 ; 先构建 PyInstaller onedir 包，再运行：
 ;   ISCC.exe installer\DocStudio.iss
 
 #define AppName "DocStudio"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "Winkless213"
 #define AppURL "https://github.com/Winkless213/doc-studio"
 #define AppExe "DocStudio.exe"
@@ -18,7 +18,7 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.0.1.0
 VersionInfoDescription={#AppName} installer
 VersionInfoProductName={#AppName}
 DefaultDirName={localappdata}\Programs\{#AppName}
