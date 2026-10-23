@@ -18,3 +18,7 @@ review*/
 .env
 .env.*
 *.log
+
+# 本地构建输出
+work/
+dist/
